@@ -173,6 +173,23 @@ export interface ExtractedFact {
   confidence: number;
 }
 
+// Type definitions for Gemini API response structure
+interface GeminiContentPart {
+  text?: string;
+}
+
+interface GeminiContent {
+  parts?: GeminiContentPart[];
+}
+
+interface GeminiCandidate {
+  content?: GeminiContent;
+}
+
+interface GeminiResponse {
+  candidates?: GeminiCandidate[];
+}
+
 export const extractFacts = async (
   content: string,
   settings: Settings
@@ -213,9 +230,10 @@ ${content.substring(0, 12000)}`;
         temperature: 0.1,
       }
     });
-    const text = (response as any).candidates?.[0]?.content?.parts?.[0]?.text || '[]';
-    const facts = JSON.parse(text);
-    return facts.filter((f: any) =>
+    const geminiResponse = response as GeminiResponse;
+    const text = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+    const facts: ExtractedFact[] = JSON.parse(text);
+    return facts.filter((f: ExtractedFact) =>
       f && f.subject && f.predicate && f.object && typeof f.confidence === 'number'
     );
   } catch (err) {

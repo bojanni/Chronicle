@@ -99,6 +99,7 @@ export interface Settings {
   availableModels: string[];
   userAvatar?: string;
   userName?: string;
+  hasSeenDemo?: boolean;
 }
 
 export type ViewMode = 'dashboard' | 'archive' | 'mindmap' | 'search';

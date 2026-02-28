@@ -9,7 +9,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { AnalyticsDashboard } from './components/AnalyticsDashboard';
 import { RightSidebar } from './components/RightSidebar';
 import { AdvancedSearch } from './components/AdvancedSearch';
-import { ExtractedFact } from './services/geminiService';
+import { ExtractedFact } from './types';
 
 const STORAGE_KEY = 'chronicle_chats_v1';
 const LINKS_KEY = 'chronicle_links_v1';
@@ -200,12 +200,15 @@ const App: React.FC = () => {
         if (savedSettings) initialSettings = JSON.parse(savedSettings);
       }
 
-      if (initialChats.length < 50) {
+      // Inject demo data only if user hasn't seen it before
+      if (!initialSettings.hasSeenDemo) {
         const { demoItems, demoLinks } = generateDemoData();
         const existingIds = new Set(initialChats.map(c => c.id));
         const newDemoItems = demoItems.filter(d => !existingIds.has(d.id));
         initialChats = [...newDemoItems, ...initialChats];
         initialLinks = [...demoLinks, ...initialLinks];
+        // Mark demo as seen so it won't inject again
+        initialSettings.hasSeenDemo = true;
       }
 
       setState(prev => ({
@@ -236,12 +239,17 @@ const App: React.FC = () => {
     applyTheme(state.settings.theme);
   }, [state.settings.theme]);
 
+  // Debounced save to database (2 second delay)
   useEffect(() => {
-    if (window.electronAPI) {
-      window.electronAPI.saveDatabase(state.chats);
-    } else {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.chats));
-    }
+    const timeoutId = setTimeout(() => {
+      if (window.electronAPI) {
+        window.electronAPI.saveDatabase(state.chats);
+      } else {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state.chats));
+      }
+    }, 2000);
+
+    return () => clearTimeout(timeoutId);
   }, [state.chats]);
 
   useEffect(() => {
