@@ -3,11 +3,15 @@ const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { Pool } = require('pg');
+const { SalienceDecayService } = require('./services/salienceDecayService');
 
 // Initialize PostgreSQL Pool
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/ai_chat_archive'
 });
+
+// Initialize Salience Decay Service
+let salienceDecayService = null;
 
 let mainWindow;
 
@@ -91,6 +95,33 @@ async function initDatabase() {
         await client.query('CREATE INDEX IF NOT EXISTS idx_facts_chat_id ON facts(chat_id)');
         await client.query('ALTER TABLE chats ADD COLUMN IF NOT EXISTS salience FLOAT DEFAULT 0.4');
         await client.query('ALTER TABLE chats ADD COLUMN IF NOT EXISTS recall_count INTEGER DEFAULT 0');
+        
+        // Salience decay tracking columns
+        await client.query('ALTER TABLE chats ADD COLUMN IF NOT EXISTS last_accessed_at BIGINT');
+        await client.query('ALTER TABLE chats ADD COLUMN IF NOT EXISTS decay_metadata JSONB DEFAULT \'{}\'');
+        await client.query('ALTER TABLE facts ADD COLUMN IF NOT EXISTS last_accessed_at BIGINT');
+        await client.query('ALTER TABLE facts ADD COLUMN IF NOT EXISTS recall_count INTEGER DEFAULT 0');
+        await client.query('ALTER TABLE facts ADD COLUMN IF NOT EXISTS decay_metadata JSONB DEFAULT \'{}\'');
+        
+        // Create salience decay metrics table
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS salience_decay_metrics (
+            id SERIAL PRIMARY KEY,
+            run_timestamp TIMESTAMPTZ DEFAULT NOW(),
+            items_processed INTEGER DEFAULT 0,
+            items_decayed INTEGER DEFAULT 0,
+            average_decay_amount FLOAT DEFAULT 0,
+            memory_entropy FLOAT DEFAULT 0,
+            environmental_context TEXT,
+            processing_duration_ms INTEGER,
+            error_count INTEGER DEFAULT 0
+          )
+        `);
+        
+        // Indexes for efficient decay queries
+        await client.query('CREATE INDEX IF NOT EXISTS idx_chats_last_accessed ON chats(last_accessed_at) WHERE salience > 0.1');
+        await client.query('CREATE INDEX IF NOT EXISTS idx_facts_last_accessed ON facts(last_accessed_at) WHERE salience > 0.1');
+        await client.query('CREATE INDEX IF NOT EXISTS idx_decay_metrics_timestamp ON salience_decay_metrics(run_timestamp DESC)');
 
         // Optimized Indexes
         await client.query('CREATE INDEX IF NOT EXISTS idx_chats_created_at ON chats(createdAt DESC)');
@@ -249,14 +280,31 @@ ipcMain.handle('save-facts', async (event, chatId, facts) => {
 
 ipcMain.handle('boost-salience', async (event, chatId) => {
   try {
+    const currentTime = Date.now();
+    
+    // Update salience and recall count, and reset decay timer
     await pool.query(
-      'UPDATE chats SET salience = LEAST(salience + 0.05, 1.0), recall_count = recall_count + 1 WHERE id = $1',
-      [chatId]
+      `UPDATE chats 
+       SET salience = LEAST(salience + 0.05, 1.0), 
+           recall_count = COALESCE(recall_count, 0) + 1,
+           last_accessed_at = $2
+       WHERE id = $1`,
+      [chatId, currentTime]
     );
+    
     await pool.query(
-      'UPDATE facts SET salience = LEAST(salience + 0.03, 1.0) WHERE chat_id = $1',
-      [chatId]
+      `UPDATE facts 
+       SET salience = LEAST(salience + 0.03, 1.0),
+           last_accessed_at = $2
+       WHERE chat_id = $1`,
+      [chatId, currentTime]
     );
+    
+    // Also notify decay service of memory access (if running)
+    if (salienceDecayService) {
+      await salienceDecayService.onMemoryAccess(chatId, 'chat');
+    }
+    
     return true;
   } catch (err) {
     console.error('[Chronicle] Salience boost error:', err);
@@ -288,6 +336,100 @@ ipcMain.handle('load-facts', async (event, chatId) => {
   }
 });
 
+// IPC handler for getting salience decay metrics
+ipcMain.handle('get-decay-metrics', async () => {
+  if (!salienceDecayService) {
+    return { error: 'Decay service not initialized' };
+  }
+  
+  try {
+    const metrics = salienceDecayService.getMetrics();
+    
+    // Also get recent database metrics
+    const client = await pool.connect();
+    try {
+      const result = await client.query(`
+        SELECT * FROM salience_decay_metrics 
+        ORDER BY run_timestamp DESC 
+        LIMIT 10
+      `);
+      
+      return {
+        serviceMetrics: metrics,
+        recentRuns: result.rows
+      };
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error('[Chronicle] Get decay metrics error:', err);
+    return { error: err.message };
+  }
+});
+
+// IPC handler for manually triggering a decay cycle
+ipcMain.handle('trigger-decay-cycle', async () => {
+  if (!salienceDecayService) {
+    return { error: 'Decay service not initialized' };
+  }
+  
+  try {
+    const result = await salienceDecayService.runDecayCycle();
+    return { success: true, result };
+  } catch (err) {
+    console.error('[Chronicle] Manual decay cycle error:', err);
+    return { error: err.message };
+  }
+});
+
+// IPC handler for updating memory type (affects decay rate)
+ipcMain.handle('update-memory-type', async (event, chatId, memoryType) => {
+  try {
+    await pool.query(
+      'UPDATE chats SET memory_type = $2 WHERE id = $1',
+      [chatId, memoryType]
+    );
+    return true;
+  } catch (err) {
+    console.error('[Chronicle] Update memory type error:', err);
+    return false;
+  }
+});
+
+// IPC handler for tracking chat views (rehearsal events that reset decay)
+ipcMain.handle('track-chat-view', async (event, chatId) => {
+  try {
+    const currentTime = Date.now();
+    
+    // Update last_accessed_at and increment recall_count
+    await pool.query(
+      `UPDATE chats 
+       SET last_accessed_at = $1,
+           recall_count = COALESCE(recall_count, 0) + 1
+       WHERE id = $2`,
+      [currentTime, chatId]
+    );
+    
+    // Also notify decay service
+    if (salienceDecayService) {
+      await salienceDecayService.onMemoryAccess(chatId, 'chat');
+    }
+    
+    return true;
+  } catch (err) {
+    console.error('[Chronicle] Track chat view error:', err);
+    return false;
+  }
+});
+
+// Clean up decay service on app quit
+app.on('before-quit', () => {
+  if (salienceDecayService) {
+    console.log('[Chronicle] Stopping salience decay service...');
+    salienceDecayService.stop();
+  }
+});
+
 // Original boilerplate (rest of file) remains unchanged for window creation and other handlers...
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -305,6 +447,25 @@ function createWindow() {
 app.whenReady().then(async () => {
   try {
     await initDatabase();
+    
+    // Initialize and start salience decay service
+    try {
+      salienceDecayService = new SalienceDecayService(pool, {
+        intervalMs: 900000, // 15 minutes
+        batchSize: 100,
+        enableLogging: true,
+        enableMetrics: true
+      });
+      
+      await salienceDecayService.initializeSchema();
+      salienceDecayService.start();
+      
+      console.log('[Chronicle] Salience decay service initialized and started');
+    } catch (decayErr) {
+      console.error('[Chronicle] Failed to initialize salience decay service:', decayErr);
+      // Don't fail app startup if decay service fails
+    }
+    
     createWindow();
   } catch (err) {
     console.error('[Chronicle] Application failed to start - database initialization failed:', err);

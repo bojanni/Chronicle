@@ -16,5 +16,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   boostSalience: (chatId) => ipcRenderer.invoke('boost-salience', chatId),
   saveFacts: (chatId, facts) => ipcRenderer.invoke('save-facts', chatId, facts),
   loadFacts: (chatId) => ipcRenderer.invoke('load-facts', chatId),
+  getDecayMetrics: () => ipcRenderer.invoke('get-decay-metrics'),
+  triggerDecayCycle: () => ipcRenderer.invoke('trigger-decay-cycle'),
+  updateMemoryType: (chatId, memoryType) => ipcRenderer.invoke('update-memory-type', chatId, memoryType),
+  trackChatView: (chatId) => ipcRenderer.invoke('track-chat-view', chatId),
   platform: process.platform,
 });

@@ -41,6 +41,29 @@ export interface Link {
 /**
  * Een geëxtraheerd feit uit een chat (subject → predicate → object)
  */
+/**
+ * Metadata tracking memory decay history
+ */
+export interface DecayMetadata {
+  lastDecayRun?: number;
+  decayHistory?: DecayHistoryEntry[];
+}
+
+export interface DecayHistoryEntry {
+  timestamp: number;
+  previousSalience: number;
+  newSalience: number;
+  hoursSinceAccess: number;
+  modifiers?: DecayModifiers;
+}
+
+export interface DecayModifiers {
+  ltpFactor: number;
+  recallBoost: number;
+  environmentalMultiplier: number;
+  ebbinghausModifier: number;
+}
+
 export interface Fact {
   id: string;
   chatId: string;
@@ -52,6 +75,9 @@ export interface Fact {
   validFrom: string;
   validTo?: string;
   createdAt: number;
+  recallCount?: number;
+  lastAccessedAt?: number;
+  decayMetadata?: DecayMetadata;
 }
 
 /**
@@ -83,6 +109,8 @@ export interface ChatEntry {
   memory_type?: string;
   salience?: number; // nieuw — 0.0 tot 1.0
   recallCount?: number; // nieuw — hoe vaak opgeroepen
+  lastAccessedAt?: number; // timestamp of last access for decay calculation
+  decayMetadata?: DecayMetadata; // track decay history and parameters
 }
 
 /**
