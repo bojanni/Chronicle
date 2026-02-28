@@ -11,12 +11,33 @@ const pool = new Pool({
 
 let mainWindow;
 
+// Retry configuration for database connection
+const RETRY_CONFIG = {
+  maxRetries: 10,
+  initialDelayMs: 1000,
+  maxDelayMs: 30000,
+  backoffMultiplier: 2
+};
+
 /**
- * Database Initialization for PostgreSQL
+ * Sleep helper for delay between retries
+ */
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Database Initialization for PostgreSQL with retry logic
  */
 async function initDatabase() {
-  const client = await pool.connect();
-  try {
+  let lastError;
+  let delay = RETRY_CONFIG.initialDelayMs;
+
+  for (let attempt = 1; attempt <= RETRY_CONFIG.maxRetries; attempt++) {
+    try {
+      console.log(`[Chronicle] Database connection attempt ${attempt}/${RETRY_CONFIG.maxRetries}...`);
+      const client = await pool.connect();
+      try {
     await client.query('BEGIN');
     
     // Create core table with assets column
@@ -93,14 +114,30 @@ async function initDatabase() {
       END $$;
     `);
 
-    await client.query('COMMIT');
-    console.log('[Chronicle] PostgreSQL Schema verified.');
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('[Chronicle] DB Init Error:', err);
-  } finally {
-    client.release();
+        await client.query('COMMIT');
+        console.log('[Chronicle] PostgreSQL Schema verified successfully.');
+        return; // Success - exit retry loop
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err; // Re-throw to be caught by outer retry logic
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      lastError = err;
+      console.error(`[Chronicle] DB Init Error (attempt ${attempt}/${RETRY_CONFIG.maxRetries}):`, err.message);
+
+      if (attempt < RETRY_CONFIG.maxRetries) {
+        console.log(`[Chronicle] Retrying in ${delay}ms...`);
+        await sleep(delay);
+        delay = Math.min(delay * RETRY_CONFIG.backoffMultiplier, RETRY_CONFIG.maxDelayMs);
+      }
+    }
   }
+
+  // All retries exhausted
+  console.error('[Chronicle] Failed to initialize database after all retries.');
+  throw lastError;
 }
 
 // IPC Handlers
@@ -241,6 +278,19 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  await initDatabase();
-  createWindow();
+  try {
+    await initDatabase();
+    createWindow();
+  } catch (err) {
+    console.error('[Chronicle] Application failed to start - database initialization failed:', err);
+    dialog.showErrorBox(
+      'Database Connection Error',
+      `Failed to connect to PostgreSQL database after ${RETRY_CONFIG.maxRetries} attempts.\n\n` +
+      `Please ensure:\n` +
+      `1. Docker is running with: docker-compose up -d\n` +
+      `2. PostgreSQL is accessible at localhost:5432\n\n` +
+      `Error: ${err.message}`
+    );
+    app.quit();
+  }
 });
