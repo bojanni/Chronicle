@@ -166,12 +166,7 @@ export const analyzeContent = async (
 // Maintain compatibility for older call sites
 export const analyzeChatContent = (content: string, settings: Settings) => analyzeContent(content, settings);
 
-export interface ExtractedFact {
-  subject: string;
-  predicate: string;
-  object: string;
-  confidence: number;
-}
+import type { ExtractedFact } from "../types";
 
 // Type definitions for Gemini API response structure
 interface GeminiContentPart {

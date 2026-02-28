@@ -2,7 +2,7 @@
 import React, { useState, useMemo, useEffect, useRef, Component } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { ChatEntry, Settings, ItemType, Link } from '../types';
+import { ChatEntry, Settings, ItemType, Link, Fact } from '../types';
 import { XIcon, TagIcon, NetworkIcon, MessageIcon, ArrowLeftIcon, ChevronLeftIcon, ChevronRightIcon, RefreshIcon, PencilIcon, SearchIcon, PlusIcon, BoltIcon } from './Icons';
 import { parseChatMessages, Message } from '../utils/chatUtils';
 import { ChatCard } from './ChatCard';
@@ -136,6 +136,40 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   }
 }
 
+const FactsDisplay: React.FC<{ facts: Fact[] }> = ({ facts }) => {
+  if (!facts || facts.length === 0) return null;
+
+  return (
+    <div className="bg-slate-50/50 dark:bg-stone-900/50 border border-sandstone/30 rounded-3xl p-8 relative shadow-sm mt-8">
+      <div className="absolute -top-3 left-8 px-3 py-1 bg-white dark:bg-stone-800 border border-sandstone/30 rounded-full text-[9px] font-black uppercase tracking-widest text-moss-brown shadow-sm flex items-center gap-2">
+        <BoltIcon className="w-3 h-3 text-amber-500" />
+        Extracted Knowledge
+      </div>
+      <div className="grid gap-2 mt-2">
+        {facts.map((fact) => (
+          <div key={fact.id} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 text-sm p-3 bg-white dark:bg-stone-800 rounded-xl border border-sandstone/10 hover:border-sandstone/30 transition-all hover:shadow-sm group">
+            <div className="flex-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="font-bold text-stone-800 dark:text-stone-200">{fact.subject}</span>
+              <span className="text-[10px] uppercase tracking-wider text-stone-400 font-mono px-2 py-0.5 bg-stone-100 dark:bg-stone-900 rounded-md border border-sandstone/10">{fact.predicate}</span>
+              <span className="font-medium text-stone-600 dark:text-stone-400">{fact.object}</span>
+            </div>
+            {(fact.confidence < 0.8 || fact.salience > 0.7) && (
+              <div className="flex items-center gap-2 shrink-0 opacity-60 group-hover:opacity-100 transition-opacity">
+                 {fact.confidence < 0.8 && (
+                     <span className="text-[8px] uppercase tracking-widest text-amber-600 bg-amber-50 dark:bg-amber-900/20 px-1.5 py-0.5 rounded border border-amber-200 dark:border-amber-800/30">Low Confidence</span>
+                 )}
+                 {fact.salience > 0.7 && (
+                     <span className="text-[8px] uppercase tracking-widest text-sage-green bg-sage-green/10 px-1.5 py-0.5 rounded border border-sage-green/20">Key Insight</span>
+                 )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 const UserMessageBubble: React.FC<{ message: Message; userAvatar?: string; userName?: string }> = ({ message, userAvatar, userName }) => (
   <div className="flex gap-4 mt-8 mb-8 p-6 bg-white dark:bg-stone-800 rounded-2xl border border-sandstone/30 dark:border-stone-700/50 shadow-md group transition-all">
     <div className="w-8 h-8 rounded-lg bg-[#DBAA89] flex items-center justify-center text-white shrink-0">
@@ -159,6 +193,7 @@ export const ChatViewer: React.FC<ChatViewerProps> = ({
   chat, allChats, allLinks, onClose, onDelete, onUpdate, onSelectChat, onAddLink, onRemoveLink, settings, returnToMindMap, onTagClick, activeRelatedTags = [] 
 }) => {
   const [isEditing, setIsEditing] = useState(false);
+  const [facts, setFacts] = useState<Fact[]>([]);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [editTitle, setEditTitle] = useState(chat.title);
   const [editSummary, setEditSummary] = useState(chat.summary);
@@ -180,6 +215,20 @@ export const ChatViewer: React.FC<ChatViewerProps> = ({
     setIsEditing(false);
     setShowDeleteConfirm(false);
     if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
+  }, [chat.id]);
+
+  useEffect(() => {
+    const loadFacts = async () => {
+      try {
+        if ((window as any).electronAPI?.loadFacts) {
+            const loadedFacts = await (window as any).electronAPI.loadFacts(chat.id);
+            setFacts(loadedFacts);
+        }
+      } catch (err) {
+        console.error('Failed to load facts:', err);
+      }
+    };
+    loadFacts();
   }, [chat.id]);
 
   const parsedMessages = useMemo(() => parseChatMessages(chat.content, chat.createdAt), [chat.content]);
@@ -281,6 +330,8 @@ export const ChatViewer: React.FC<ChatViewerProps> = ({
                       </button>
                   ))}
               </div>
+
+              <FactsDisplay facts={facts} />
 
               <div className={`relative transition-all duration-700 ${isNote ? 'bg-[#FFFDF7] dark:bg-stone-900 p-12 rounded-[2rem] shadow-2xl border-2 border-dashed border-amber-200' : ''}`}>
                   {isEditing && isNote ? (

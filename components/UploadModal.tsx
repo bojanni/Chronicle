@@ -1,8 +1,8 @@
 
 import React, { useState, useRef } from 'react';
-import { SourceType, Settings, ItemType } from '../types';
+import { SourceType, Settings, ItemType, ExtractedFact } from '../types';
 import { XIcon, FileIcon, RefreshIcon, BoltIcon, PlusIcon } from './Icons';
-import { analyzeContent, generateEmbedding, extractFacts, ExtractedFact } from '../services/geminiService';
+import { analyzeContent, generateEmbedding, extractFacts } from '../services/geminiService';
 import { convertJsonToTranscript } from '../utils/chatUtils';
 
 interface UploadModalProps {

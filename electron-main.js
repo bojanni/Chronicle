@@ -270,7 +270,18 @@ ipcMain.handle('load-facts', async (event, chatId) => {
       'SELECT * FROM facts WHERE chat_id = $1 AND valid_to IS NULL ORDER BY salience DESC, created_at DESC',
       [chatId]
     );
-    return res.rows;
+    return res.rows.map(r => ({
+      id: r.id,
+      chatId: r.chat_id,
+      subject: r.subject,
+      predicate: r.predicate,
+      object: r.object,
+      confidence: r.confidence,
+      salience: r.salience,
+      validFrom: r.valid_from,
+      validTo: r.valid_to,
+      createdAt: Number(r.created_at)
+    }));
   } catch (err) {
     console.error('[Chronicle] Load facts error:', err);
     return [];
