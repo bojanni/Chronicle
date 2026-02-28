@@ -246,6 +246,7 @@ class SalienceDecayService {
       }
       
       let decayedCount = 0;
+      let batchDecayAmount = 0;
       const currentTime = Date.now();
       
       // Process each item
@@ -264,6 +265,8 @@ class SalienceDecayService {
         
         // Only update if salience actually changed
         if (decayResult.newSalience < item.salience) {
+          batchDecayAmount += decayResult.decayAmount;
+          
           const updatedMetadata = {
             lastDecayRun: currentTime,
             decayHistory: [
@@ -296,6 +299,7 @@ class SalienceDecayService {
       return {
         processed: items.length,
         decayed: decayedCount,
+        totalDecayAmount: batchDecayAmount,
         nextCursor,
         duration: Date.now() - batchStartTime
       };
@@ -346,6 +350,7 @@ class SalienceDecayService {
         
         totalProcessed += result.processed;
         totalDecayed += result.decayed;
+        totalDecayAmount += result.totalDecayAmount || 0;
         this.processingStats.batchesCompleted++;
         chatCursor = result.nextCursor;
         
@@ -361,6 +366,7 @@ class SalienceDecayService {
         
         totalProcessed += result.processed;
         totalDecayed += result.decayed;
+        totalDecayAmount += result.totalDecayAmount || 0;
         this.processingStats.batchesCompleted++;
         factCursor = result.nextCursor;
         
