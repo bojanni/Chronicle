@@ -51,6 +51,26 @@ async function initDatabase() {
       )
     `);
 
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS facts (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        chat_id TEXT REFERENCES chats(id) ON DELETE CASCADE,
+        subject TEXT NOT NULL,
+        predicate TEXT NOT NULL,
+        object TEXT NOT NULL,
+        confidence FLOAT DEFAULT 1.0,
+        salience FLOAT DEFAULT 0.5,
+        valid_from TIMESTAMPTZ DEFAULT NOW(),
+        valid_to TIMESTAMPTZ,
+        created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000
+      )
+    `);
+    await client.query('CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_facts_predicate ON facts(predicate)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_facts_chat_id ON facts(chat_id)');
+    await client.query('ALTER TABLE chats ADD COLUMN IF NOT EXISTS salience FLOAT DEFAULT 0.4');
+    await client.query('ALTER TABLE chats ADD COLUMN IF NOT EXISTS recall_count INTEGER DEFAULT 0');
+
     // Optimized Indexes
     await client.query('CREATE INDEX IF NOT EXISTS idx_chats_created_at ON chats(createdAt DESC)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_chats_source ON chats(source)');
@@ -58,6 +78,7 @@ async function initDatabase() {
 
     // Enable pgvector and ensure vector index exists for semantic search
     await client.query('CREATE EXTENSION IF NOT EXISTS vector');
+    await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
     await client.query(`
       DO $$
       BEGIN
@@ -146,6 +167,61 @@ ipcMain.handle('load-database', async () => {
     }));
   } catch (err) {
     console.error('[Chronicle] Load Error:', err);
+    return [];
+  }
+});
+
+ipcMain.handle('save-facts', async (event, chatId, facts) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const fact of facts) {
+      await client.query(
+        'UPDATE facts SET valid_to = NOW() WHERE subject = $1 AND predicate = $2 AND valid_to IS NULL AND id <> $3',
+        [fact.subject, fact.predicate, fact.id || '00000000-0000-0000-0000-000000000000']
+      );
+      await client.query(
+        'INSERT INTO facts (chat_id, subject, predicate, object, confidence, salience) VALUES ($1, $2, $3, $4, $5, 0.5) ON CONFLICT DO NOTHING',
+        [chatId, fact.subject, fact.predicate, fact.object, typeof fact.confidence === 'number' ? fact.confidence : 1.0]
+      );
+    }
+    await client.query('COMMIT');
+    return true;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('[Chronicle] Save facts error:', err);
+    return false;
+  } finally {
+    client.release();
+  }
+});
+
+ipcMain.handle('boost-salience', async (event, chatId) => {
+  try {
+    await pool.query(
+      'UPDATE chats SET salience = LEAST(salience + 0.05, 1.0), recall_count = recall_count + 1 WHERE id = $1',
+      [chatId]
+    );
+    await pool.query(
+      'UPDATE facts SET salience = LEAST(salience + 0.03, 1.0) WHERE chat_id = $1',
+      [chatId]
+    );
+    return true;
+  } catch (err) {
+    console.error('[Chronicle] Salience boost error:', err);
+    return false;
+  }
+});
+
+ipcMain.handle('load-facts', async (event, chatId) => {
+  try {
+    const res = await pool.query(
+      'SELECT * FROM facts WHERE chat_id = $1 AND valid_to IS NULL ORDER BY salience DESC, created_at DESC',
+      [chatId]
+    );
+    return res.rows;
+  } catch (err) {
+    console.error('[Chronicle] Load facts error:', err);
     return [];
   }
 });

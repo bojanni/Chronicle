@@ -165,3 +165,61 @@ export const analyzeContent = async (
 
 // Maintain compatibility for older call sites
 export const analyzeChatContent = (content: string, settings: Settings) => analyzeContent(content, settings);
+
+export interface ExtractedFact {
+  subject: string;
+  predicate: string;
+  object: string;
+  confidence: number;
+}
+
+export const extractFacts = async (
+  content: string,
+  settings: Settings
+): Promise<ExtractedFact[]> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const prompt = `Je bent een kennisextractie-engine. Analyseer dit gesprek en extraheer feitelijke claims als gestructureerde triplets.
+
+REGELS:
+- subject: de entiteit waar het over gaat (persoon, tool, concept, project)
+- predicate: de relatie of eigenschap (gebruik snake_case, bijv. "prefers", "is_written_in", "has_feature")
+- object: de waarde of het doelobject
+- confidence: zekerheid van het feit (0.0 - 1.0)
+
+EXTRAHEER ALLEEN:
+- Technische keuzes ("user prefers TypeScript", "project uses PostgreSQL")
+- Persoonlijke voorkeuren ("user dislikes verbose code")
+- Feitelijke constateringen ("Chronicle has MCP support")
+- Beslissingen ("user decided to migrate to vector search")
+
+NEGEER:
+- Vragen zonder antwoord
+- Hypothetische situaties
+- Tijdelijk genoemde dingen zonder conclusie
+
+Geef ALLEEN een JSON array terug, geen uitleg:
+[
+  { "subject": "...", "predicate": "...", "object": "...", "confidence": 0.9 }
+]
+
+GESPREK:
+${content.substring(0, 12000)}`;
+  try {
+    const response = await ai.models.generateContent({
+      model: settings.preferredModel || 'gemini-2.5-flash-lite-latest',
+      contents: [{ parts: [{ text: prompt }] }],
+      config: {
+        responseMimeType: 'application/json',
+        temperature: 0.1,
+      }
+    });
+    const text = (response as any).candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+    const facts = JSON.parse(text);
+    return facts.filter((f: any) =>
+      f && f.subject && f.predicate && f.object && typeof f.confidence === 'number'
+    );
+  } catch (err) {
+    console.warn('[Chronicle] Fact extraction failed:', err);
+    return [];
+  }
+};

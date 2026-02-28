@@ -2,12 +2,12 @@
 import React, { useState, useRef } from 'react';
 import { SourceType, Settings, ItemType } from '../types';
 import { XIcon, FileIcon, RefreshIcon, BoltIcon, PlusIcon } from './Icons';
-import { analyzeContent, generateEmbedding } from '../services/geminiService';
+import { analyzeContent, generateEmbedding, extractFacts, ExtractedFact } from '../services/geminiService';
 import { convertJsonToTranscript } from '../utils/chatUtils';
 
 interface UploadModalProps {
   onClose: () => void;
-  onUpload: (content: string, source: string, title: string, summary: string, tags: string[], fileName: string, embedding?: number[], assets?: string[]) => void;
+  onUpload: (content: string, source: string, title: string, summary: string, tags: string[], fileName: string, embedding?: number[], assets?: string[], facts?: ExtractedFact[]) => void;
   settings: Settings;
 }
 
@@ -23,6 +23,7 @@ interface ProcessResult {
     tags: string[];
     embedding?: number[];
     assets?: string[];
+    facts?: ExtractedFact[];
   };
 }
 
@@ -53,18 +54,21 @@ export const UploadModal: React.FC<UploadModalProps> = ({ onClose, onUpload, set
 
         const metadata = await analyzeContent(base64, settings, file.type);
         const vector = await generateEmbedding(metadata.summary + " " + metadata.suggestedTitle, settings);
+        const finalContent = `[Visual Asset: ${file.name}]\n\n${metadata.summary}`;
+        const facts = await extractFacts(finalContent, settings);
 
         return {
           fileName: file.name,
           success: true,
           isImage: true,
           data: {
-            content: `[Visual Asset: ${file.name}]\n\n${metadata.summary}`,
+            content: finalContent,
             title: metadata.suggestedTitle,
             summary: metadata.summary,
             tags: [...metadata.tags, 'visual'],
             embedding: vector,
-            assets: [`data:${file.type};base64,${base64}`]
+            assets: [`data:${file.type};base64,${base64}`],
+            facts
           }
         };
       } else {
@@ -83,6 +87,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ onClose, onUpload, set
 
         const metadata = await analyzeContent(finalContent, settings);
         const vector = await generateEmbedding(finalContent + "\n" + metadata.summary, settings);
+        const facts = await extractFacts(finalContent, settings);
 
         return {
           fileName: file.name,
@@ -92,7 +97,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({ onClose, onUpload, set
             title: metadata.suggestedTitle,
             summary: metadata.summary,
             tags: metadata.tags,
-            embedding: vector
+            embedding: vector,
+            facts
           }
         };
       }
@@ -133,7 +139,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({ onClose, onUpload, set
           res.data.tags, 
           res.fileName, 
           res.data.embedding,
-          res.data.assets
+          res.data.assets,
+          res.data.facts
         );
       }
     });

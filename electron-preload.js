@@ -13,5 +13,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   exportChats: (chats, format) => ipcRenderer.invoke('export-chats', { chats, format }),
   importChats: (existingIds) => ipcRenderer.invoke('import-chats', existingIds),
   sendNotification: (title, body) => ipcRenderer.send('notify', { title, body }),
+  boostSalience: (chatId) => ipcRenderer.invoke('boost-salience', chatId),
+  saveFacts: (chatId, facts) => ipcRenderer.invoke('save-facts', chatId, facts),
+  loadFacts: (chatId) => ipcRenderer.invoke('load-facts', chatId),
   platform: process.platform,
 });

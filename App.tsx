@@ -9,6 +9,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { AnalyticsDashboard } from './components/AnalyticsDashboard';
 import { RightSidebar } from './components/RightSidebar';
 import { AdvancedSearch } from './components/AdvancedSearch';
+import { ExtractedFact } from './services/geminiService';
 
 const STORAGE_KEY = 'chronicle_chats_v1';
 const LINKS_KEY = 'chronicle_links_v1';
@@ -30,6 +31,9 @@ declare global {
       importChats: (existingIds: string[]) => Promise<{success: boolean, chats: any[], skipped: number, error?: string, cancelled?: boolean}>;
       sendNotification: (title: string, body: string) => void;
       platform: string;
+      boostSalience: (chatId: string) => Promise<boolean>;
+      saveFacts: (chatId: string, facts: ExtractedFact[]) => Promise<boolean>;
+      loadFacts: (chatId: string) => Promise<any[]>;
     };
   }
 }
@@ -270,7 +274,7 @@ const App: React.FC = () => {
     }));
   };
 
-  const handleUpload = (content: string, source: string, title: string, summary: string, tags: string[], fileName: string, embedding?: number[], assets?: string[]) => {
+  const handleUpload = async (content: string, source: string, title: string, summary: string, tags: string[], fileName: string, embedding?: number[], assets?: string[], facts?: ExtractedFact[]) => {
     const newChat: ChatEntry = {
       id: Math.random().toString(36).substr(2, 9),
       type: ItemType.CHAT,
@@ -280,6 +284,9 @@ const App: React.FC = () => {
       fileName, embedding, assets
     };
     setState(prev => ({ ...prev, chats: [newChat, ...prev.chats], isUploading: false, viewingChat: newChat, viewMode: 'archive' }));
+    if (window.electronAPI && facts && facts.length > 0) {
+      await window.electronAPI.saveFacts(newChat.id, facts);
+    }
   };
 
   const handleCreateNote = () => {
@@ -320,7 +327,12 @@ const App: React.FC = () => {
 
   const handleDelete = (id: string) => setState(prev => ({ ...prev, chats: prev.chats.filter(c => c.id !== id), viewingChat: prev.viewingChat?.id === id ? null : prev.viewingChat, links: prev.links.filter(l => l.fromId !== id && l.toId !== id) }));
   const handleUpdate = (updatedChat: ChatEntry) => setState(prev => ({ ...prev, chats: prev.chats.map(c => c.id === updatedChat.id ? { ...updatedChat, updatedAt: Date.now() } : c), viewingChat: prev.viewingChat?.id === updatedChat.id ? updatedChat : prev.viewingChat }));
-  const handleSelectChat = (chat: ChatEntry, fromMindMap: boolean = false) => setState(prev => ({ ...prev, viewingChat: chat, returnToMindMap: fromMindMap, viewMode: 'archive', isRightPanelOpen: false }));
+  const handleSelectChat = async (chat: ChatEntry, fromMindMap: boolean = false) => {
+    setState(prev => ({ ...prev, viewingChat: chat, returnToMindMap: fromMindMap, viewMode: 'archive', isRightPanelOpen: false }));
+    if (window.electronAPI) {
+      await window.electronAPI.boostSalience(chat.id);
+    }
+  };
   
   const toggleTag = (tag: string) => {
     if (tag === 'All') { setState(prev => ({ ...prev, selectedTags: [] })); return; }
