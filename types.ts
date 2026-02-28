@@ -39,6 +39,32 @@ export interface Link {
 }
 
 /**
+ * Een geëxtraheerd feit uit een chat (subject → predicate → object)
+ */
+export interface Fact {
+  id: string;
+  chatId: string;
+  subject: string;
+  predicate: string;
+  object: string;
+  confidence: number;
+  salience: number;
+  validFrom: string;
+  validTo?: string;
+  createdAt: number;
+}
+
+/**
+ * Fact zoals teruggegeven door de Gemini extractie (voor opslag)
+ */
+export interface ExtractedFact {
+  subject: string;
+  predicate: string;
+  object: string;
+  confidence: number;
+}
+
+/**
  * Core Entry in the Archive (can be a Chat or a Note)
  */
 export interface ChatEntry {
@@ -55,7 +81,8 @@ export interface ChatEntry {
   embedding?: number[]; 
   assets?: string[]; // Base64 encoded image strings or URIs
   memory_type?: string;
-  salience?: number;
+  salience?: number; // nieuw — 0.0 tot 1.0
+  recallCount?: number; // nieuw — hoe vaak opgeroepen
 }
 
 /**
@@ -79,6 +106,7 @@ export type ViewMode = 'dashboard' | 'archive' | 'mindmap' | 'search';
 export interface AppState {
   chats: ChatEntry[];
   links: Link[];
+  facts: Fact[];
   searchQuery: string;
   selectedSource: SourceType | 'All';
   selectedTags: string[];

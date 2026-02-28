@@ -157,6 +157,7 @@ const App: React.FC = () => {
   const [state, setState] = useState<AppState>({
     chats: [],
     links: [],
+    facts: [],
     searchQuery: '',
     selectedSource: 'All',
     selectedTags: [],
