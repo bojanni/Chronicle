@@ -9,15 +9,12 @@ export const PACKAGE_JSON = JSON.stringify({
     "start": "node index.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^0.6.0"
+    "@modelcontextprotocol/sdk": "^0.6.0",
+    "pg": "^8.18.0"
   }
 }, null, 2);
 
 export const SERVER_JS = `#!/usr/bin/env node
-/**
- * Chronicle MCP Server
- * A Model Context Protocol implementation to expose your personal AI archive.
- */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -26,31 +23,12 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { Pool } from 'pg';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = path.join(__dirname, 'chronicle-db.json');
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/ai_chat_archive'
+});
 
-// --- Data Layer ---
-let chats = [];
-
-function loadData() {
-  try {
-    if (fs.existsSync(DB_PATH)) {
-      const data = fs.readFileSync(DB_PATH, 'utf8');
-      chats = JSON.parse(data);
-      console.error(\`[Chronicle] Loaded \${chats.length} conversations.\`);
-    } else {
-      console.error('[Chronicle] ERROR: chronicle-db.json not found in server directory.');
-    }
-  } catch (error) {
-    console.error('[Chronicle] ERROR loading database:', error);
-  }
-}
-
-// --- Vector Math for Semantic Search ---
 function cosineSimilarity(vecA, vecB) {
   if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
   let dotProduct = 0;
@@ -64,49 +42,44 @@ function cosineSimilarity(vecA, vecB) {
   return dotProduct / (Math.sqrt(magA) * Math.sqrt(magB));
 }
 
-// Initialize
-loadData();
-
 const server = new Server(
   { name: 'chronicle-mcp-server', version: '1.1.0' },
   { capabilities: { resources: {}, tools: {} } }
 );
 
-// --- Resources: Allows LLMs to see a list of all chats as files ---
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
-  return {
-    resources: chats.map(chat => ({
-      uri: \`chronicle://chats/\${chat.id}\`,
-      name: chat.title,
-      description: chat.summary,
-      mimeType: 'text/markdown',
-    })),
-  };
+  const res = await pool.query('SELECT id, title, summary FROM chats ORDER BY createdAt DESC');
+  const resources = res.rows.map(chat => ({
+    uri: \`chronicle://chats/\${chat.id}\`,
+    name: chat.title || 'Untitled',
+    description: chat.summary || '',
+    mimeType: 'text/markdown',
+  }));
+  return { resources };
 });
 
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   const url = new URL(request.params.uri);
   const id = url.pathname.replace(/^\\//, '');
-  const chat = chats.find(c => c.id === id);
-
+  const res = await pool.query('SELECT * FROM chats WHERE id = $1', [id]);
+  const chat = res.rows[0];
   if (!chat) throw new Error(\`Chat \${id} not found\`);
 
+  const tags = Array.isArray(chat.tags) ? chat.tags : (typeof chat.tags === 'string' ? JSON.parse(chat.tags) : []);
   const md = \`# \${chat.title}
-**Date:** \${new Date(chat.createdAt).toLocaleDateString()}
+**Date:** \${new Date(Number(chat.createdat)).toLocaleDateString()}
 **Source:** \${chat.source}
-**Tags:** \${chat.tags.join(', ')}
+**Tags:** \${tags.join(', ')}
 
 ## Summary
-\${chat.summary}
+\${chat.summary || ''}
 
 ## Transcript
-\${chat.content}
+\${chat.content || ''}
 \`;
-
   return { contents: [{ uri: request.params.uri, mimeType: 'text/markdown', text: md }] };
 });
 
-// --- Tools: Functional entry points for the LLM ---
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
@@ -156,33 +129,63 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   switch (name) {
-    case 'search_archive':
-      const q = args.query.toLowerCase();
-      const results = chats.filter(c => 
-        c.title.toLowerCase().includes(q) || 
-        c.summary.toLowerCase().includes(q) ||
-        c.tags.some(t => t.toLowerCase().includes(q))
-      ).slice(0, 10);
-      return { content: [{ type: 'text', text: JSON.stringify(results.map(r => ({ id: r.id, title: r.title, summary: r.summary })), null, 2) }] };
+    case 'search_archive': {
+      const pattern = \`%\${String(args.query)}%\`;
+      const { rows } = await pool.query(
+        \`
+          SELECT id, title, summary
+          FROM chats
+          WHERE title ILIKE $1
+             OR summary ILIKE $1
+             OR EXISTS (
+               SELECT 1 FROM jsonb_array_elements_text(tags) t
+               WHERE t ILIKE $1
+             )
+          ORDER BY createdAt DESC
+          LIMIT 10
+        \`,
+        [pattern]
+      );
+      return { content: [{ type: 'text', text: JSON.stringify(rows, null, 2) }] };
+    }
 
-    case 'semantic_search':
-      const target = chats.find(c => c.id === args.targetId);
-      if (!target || !target.embedding) return { isError: true, content: [{ type: 'text', text: 'Target chat not found or has no vector data.' }] };
-      
-      const scored = chats
-        .filter(c => c.id !== target.id && c.embedding)
-        .map(c => ({ id: c.id, title: c.title, summary: c.summary, score: cosineSimilarity(target.embedding, c.embedding) }))
+    case 'semantic_search': {
+      const targetId = String(args.targetId);
+      const targetRes = await pool.query('SELECT id, title, summary, embedding FROM chats WHERE id = $1', [targetId]);
+      const target = targetRes.rows[0];
+      if (!target || !target.embedding) {
+        return { isError: true, content: [{ type: 'text', text: 'Target chat not found or has no vector data.' }] };
+      }
+      const othersRes = await pool.query('SELECT id, title, summary, embedding FROM chats WHERE id <> $1 AND embedding IS NOT NULL', [targetId]);
+      const scored = othersRes.rows
+        .filter(r => Array.isArray(r.embedding))
+        .map(r => ({ id: r.id, title: r.title, summary: r.summary, score: cosineSimilarity(target.embedding, r.embedding) }))
         .sort((a, b) => b.score - a.score)
-        .slice(0, args.limit || 5);
+        .slice(0, Number(args.limit) || 5);
       return { content: [{ type: 'text', text: JSON.stringify(scored, null, 2) }] };
+    }
 
-    case 'list_recent_chats':
-      const recent = chats.slice(0, args.count || 5).map(r => ({ id: r.id, title: r.title, date: new Date(r.createdAt).toISOString() }));
+    case 'list_recent_chats': {
+      const count = Math.max(1, Number(args.count) || 5);
+      const { rows } = await pool.query(
+        'SELECT id, title, createdAt FROM chats ORDER BY createdAt DESC LIMIT $1',
+        [count]
+      );
+      const recent = rows.map(r => ({ id: r.id, title: r.title, date: new Date(Number(r.createdat)).toISOString() }));
       return { content: [{ type: 'text', text: JSON.stringify(recent, null, 2) }] };
+    }
 
-    case 'list_tags':
-      const tags = [...new Set(chats.flatMap(c => c.tags))].sort();
+    case 'list_tags': {
+      const { rows } = await pool.query(\`
+        SELECT DISTINCT tag FROM (
+          SELECT jsonb_array_elements_text(tags) AS tag FROM chats
+        ) t
+        WHERE tag IS NOT NULL
+        ORDER BY tag
+      \`);
+      const tags = rows.map(r => r.tag);
       return { content: [{ type: 'text', text: tags.join(', ') }] };
+    }
 
     default:
       throw new Error(\`Unknown tool: \${name}\`);
