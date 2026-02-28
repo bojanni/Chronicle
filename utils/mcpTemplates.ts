@@ -168,6 +168,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!target || !target.embedding) {
         return { isError: true, content: [{ type: 'text', text: 'Target chat not found or has no vector data.' }] };
       }
+      const vectorLiteral = '[' + target.embedding.join(',') + ']';
       const limit = Math.max(1, Number(args.limit) || 5);
       const { rows } = await pool.query(
         \`
@@ -187,7 +188,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           LIMIT $5
         \`,
         [
-          target.embedding,
+          vectorLiteral,
           targetId,
           args && typeof args.memory_type === 'string' ? args.memory_type : null,
           args && typeof args.minSalience === 'number' ? args.minSalience : null,
