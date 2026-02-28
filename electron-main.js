@@ -38,81 +38,81 @@ async function initDatabase() {
       console.log(`[Chronicle] Database connection attempt ${attempt}/${RETRY_CONFIG.maxRetries}...`);
       const client = await pool.connect();
       try {
-    await client.query('BEGIN');
-    
-    // Create core table with assets column
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS chats (
-        id TEXT PRIMARY KEY,
-        type TEXT DEFAULT 'chat',
-        title TEXT,
-        content TEXT,
-        summary TEXT,
-        tags JSONB,
-        source TEXT,
-        createdAt BIGINT,
-        updatedAt BIGINT,
-        fileName TEXT,
-        embedding double precision[],
-        assets JSONB DEFAULT '[]',
-        memory_type TEXT,
-        salience double precision
-      )
-    `);
+        await client.query('BEGIN');
 
-    // Create Links Table
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS links (
-        id SERIAL PRIMARY KEY,
-        from_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
-        to_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
-        link_type TEXT,
-        created_at BIGINT,
-        UNIQUE(from_id, to_id)
-      )
-    `);
+        // Create core table with assets column
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS chats (
+            id TEXT PRIMARY KEY,
+            type TEXT DEFAULT 'chat',
+            title TEXT,
+            content TEXT,
+            summary TEXT,
+            tags JSONB,
+            source TEXT,
+            createdAt BIGINT,
+            updatedAt BIGINT,
+            fileName TEXT,
+            embedding double precision[],
+            assets JSONB DEFAULT '[]',
+            memory_type TEXT,
+            salience double precision
+          )
+        `);
 
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS facts (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        chat_id TEXT REFERENCES chats(id) ON DELETE CASCADE,
-        subject TEXT NOT NULL,
-        predicate TEXT NOT NULL,
-        object TEXT NOT NULL,
-        confidence FLOAT DEFAULT 1.0,
-        salience FLOAT DEFAULT 0.5,
-        valid_from TIMESTAMPTZ DEFAULT NOW(),
-        valid_to TIMESTAMPTZ,
-        created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000
-      )
-    `);
-    await client.query('CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject)');
-    await client.query('CREATE INDEX IF NOT EXISTS idx_facts_predicate ON facts(predicate)');
-    await client.query('CREATE INDEX IF NOT EXISTS idx_facts_chat_id ON facts(chat_id)');
-    await client.query('ALTER TABLE chats ADD COLUMN IF NOT EXISTS salience FLOAT DEFAULT 0.4');
-    await client.query('ALTER TABLE chats ADD COLUMN IF NOT EXISTS recall_count INTEGER DEFAULT 0');
+        // Create Links Table
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS links (
+            id SERIAL PRIMARY KEY,
+            from_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+            to_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+            link_type TEXT,
+            created_at BIGINT,
+            UNIQUE(from_id, to_id)
+          )
+        `);
 
-    // Optimized Indexes
-    await client.query('CREATE INDEX IF NOT EXISTS idx_chats_created_at ON chats(createdAt DESC)');
-    await client.query('CREATE INDEX IF NOT EXISTS idx_chats_source ON chats(source)');
-    await client.query('CREATE INDEX IF NOT EXISTS idx_chats_type ON chats(type)');
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS facts (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            chat_id TEXT REFERENCES chats(id) ON DELETE CASCADE,
+            subject TEXT NOT NULL,
+            predicate TEXT NOT NULL,
+            object TEXT NOT NULL,
+            confidence FLOAT DEFAULT 1.0,
+            salience FLOAT DEFAULT 0.5,
+            valid_from TIMESTAMPTZ DEFAULT NOW(),
+            valid_to TIMESTAMPTZ,
+            created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000
+          )
+        `);
+        await client.query('CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject)');
+        await client.query('CREATE INDEX IF NOT EXISTS idx_facts_predicate ON facts(predicate)');
+        await client.query('CREATE INDEX IF NOT EXISTS idx_facts_chat_id ON facts(chat_id)');
+        await client.query('ALTER TABLE chats ADD COLUMN IF NOT EXISTS salience FLOAT DEFAULT 0.4');
+        await client.query('ALTER TABLE chats ADD COLUMN IF NOT EXISTS recall_count INTEGER DEFAULT 0');
 
-    // Enable pgvector and ensure vector index exists for semantic search
-    await client.query('CREATE EXTENSION IF NOT EXISTS vector');
-    await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
-    await client.query(`
-      DO $$
-      BEGIN
-        IF NOT EXISTS (
-          SELECT 1
-          FROM pg_class c
-          JOIN pg_namespace n ON n.oid = c.relnamespace
-          WHERE c.relname = 'idx_chats_embedding_ivfflat'
-        ) THEN
-          EXECUTE 'CREATE INDEX idx_chats_embedding_ivfflat ON chats USING ivfflat ((embedding::vector) vector_cosine_ops)';
-        END IF;
-      END $$;
-    `);
+        // Optimized Indexes
+        await client.query('CREATE INDEX IF NOT EXISTS idx_chats_created_at ON chats(createdAt DESC)');
+        await client.query('CREATE INDEX IF NOT EXISTS idx_chats_source ON chats(source)');
+        await client.query('CREATE INDEX IF NOT EXISTS idx_chats_type ON chats(type)');
+
+        // Enable pgvector and ensure vector index exists for semantic search
+        await client.query('CREATE EXTENSION IF NOT EXISTS vector');
+        await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+        await client.query(`
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE c.relname = 'idx_chats_embedding_ivfflat'
+            ) THEN
+              EXECUTE 'CREATE INDEX idx_chats_embedding_ivfflat ON chats USING ivfflat ((embedding::vector) vector_cosine_ops)';
+            END IF;
+          END $$;
+        `);
 
         await client.query('COMMIT');
         console.log('[Chronicle] PostgreSQL Schema verified successfully.');
@@ -125,7 +125,21 @@ async function initDatabase() {
       }
     } catch (err) {
       lastError = err;
-      console.error(`[Chronicle] DB Init Error (attempt ${attempt}/${RETRY_CONFIG.maxRetries}):`, err.message);
+
+      // Only retry on connection errors, not schema/SQL errors
+      const isConnectionError = err.code === 'ECONNREFUSED' ||
+                                err.code === 'ETIMEDOUT' ||
+                                err.code === 'ECONNRESET' ||
+                                err.code === '08000' ||  // connection_exception
+                                err.code === '08003' ||  // connection_does_not_exist
+                                err.code === '08006';   // connection_failure
+
+      if (!isConnectionError) {
+        console.error('[Chronicle] DB Schema Error (non-retryable):', err.message);
+        throw err; // Don't retry schema/SQL errors
+      }
+
+      console.error(`[Chronicle] DB connection error (attempt ${attempt}/${RETRY_CONFIG.maxRetries}):`, err.message);
 
       if (attempt < RETRY_CONFIG.maxRetries) {
         console.log(`[Chronicle] Retrying in ${delay}ms...`);
