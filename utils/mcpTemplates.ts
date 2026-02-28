@@ -70,6 +70,8 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 **Date:** \${new Date(Number(chat.createdat)).toLocaleDateString()}
 **Source:** \${chat.source}
 **Tags:** \${tags.join(', ')}
+**Memory Type:** ${chat.memory_type || ''}
+**Salience:** ${chat.salience !== undefined && chat.salience !== null ? String(chat.salience) : ''}
 
 ## Summary
 \${chat.summary || ''}
@@ -90,6 +92,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             query: { type: 'string', description: 'Search term or keyword' },
+            memory_type: { type: 'string', description: 'Optional memory type filter' },
+            minSalience: { type: 'number', description: 'Optional minimum salience filter' }
           },
           required: ['query'],
         },
@@ -101,7 +105,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             targetId: { type: 'string', description: 'ID of the chat to find similar results for' },
-            limit: { type: 'number', description: 'Number of results (default 5)' }
+            limit: { type: 'number', description: 'Number of results (default 5)' },
+            memory_type: { type: 'string', description: 'Optional memory type filter for candidates' },
+            minSalience: { type: 'number', description: 'Optional minimum salience filter for candidates' }
           },
           required: ['targetId'],
         },
@@ -133,45 +139,82 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const pattern = \`%\${String(args.query)}%\`;
       const { rows } = await pool.query(
         \`
-          SELECT id, title, summary
+          SELECT id, title, summary, memory_type, salience
           FROM chats
-          WHERE title ILIKE $1
+          WHERE (title ILIKE $1
              OR summary ILIKE $1
              OR EXISTS (
                SELECT 1 FROM jsonb_array_elements_text(tags) t
                WHERE t ILIKE $1
-             )
+             ))
+            AND ($2::text IS NULL OR memory_type = $2)
+            AND ($3::float8 IS NULL OR salience >= $3)
           ORDER BY createdAt DESC
           LIMIT 10
         \`,
-        [pattern]
+        [
+          pattern,
+          args && typeof args.memory_type === 'string' ? args.memory_type : null,
+          args && typeof args.minSalience === 'number' ? args.minSalience : null
+        ]
       );
       return { content: [{ type: 'text', text: JSON.stringify(rows, null, 2) }] };
     }
 
     case 'semantic_search': {
       const targetId = String(args.targetId);
-      const targetRes = await pool.query('SELECT id, title, summary, embedding FROM chats WHERE id = $1', [targetId]);
+      const targetRes = await pool.query('SELECT embedding FROM chats WHERE id = $1', [targetId]);
       const target = targetRes.rows[0];
       if (!target || !target.embedding) {
         return { isError: true, content: [{ type: 'text', text: 'Target chat not found or has no vector data.' }] };
       }
-      const othersRes = await pool.query('SELECT id, title, summary, embedding FROM chats WHERE id <> $1 AND embedding IS NOT NULL', [targetId]);
-      const scored = othersRes.rows
-        .filter(r => Array.isArray(r.embedding))
-        .map(r => ({ id: r.id, title: r.title, summary: r.summary, score: cosineSimilarity(target.embedding, r.embedding) }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, Number(args.limit) || 5);
+      const limit = Math.max(1, Number(args.limit) || 5);
+      const { rows } = await pool.query(
+        \`
+          SELECT
+            id,
+            title,
+            summary,
+            memory_type,
+            salience,
+            (embedding::vector) <=> $1::vector AS distance
+          FROM chats
+          WHERE id <> $2
+            AND embedding IS NOT NULL
+            AND ($3::text IS NULL OR memory_type = $3)
+            AND ($4::float8 IS NULL OR salience >= $4)
+          ORDER BY distance ASC
+          LIMIT $5
+        \`,
+        [
+          target.embedding,
+          targetId,
+          args && typeof args.memory_type === 'string' ? args.memory_type : null,
+          args && typeof args.minSalience === 'number' ? args.minSalience : null,
+          limit
+        ]
+      );
+      const scored = rows.map(r => ({
+        id: r.id,
+        title: r.title,
+        summary: r.summary,
+        memory_type: r.memory_type || null,
+        salience: r.salience !== undefined && r.salience !== null ? Number(r.salience) : null,
+        score: 1 - Number(r.distance)
+      }));
       return { content: [{ type: 'text', text: JSON.stringify(scored, null, 2) }] };
     }
 
     case 'list_recent_chats': {
       const count = Math.max(1, Number(args.count) || 5);
-      const { rows } = await pool.query(
-        'SELECT id, title, createdAt FROM chats ORDER BY createdAt DESC LIMIT $1',
-        [count]
-      );
-      const recent = rows.map(r => ({ id: r.id, title: r.title, date: new Date(Number(r.createdat)).toISOString() }));
+      const { rows } = await pool.query('SELECT id, title, createdAt, memory_type, salience FROM chats ORDER BY createdAt DESC LIMIT $1', [count]);
+      const recent = rows.map(r => ({
+        id: r.id,
+        title: r.title,
+        memory_type: r.memory_type || null,
+        salience: r.salience !== undefined && r.salience !== null ? Number(r.salience) : null,
+        date: new Date(Number(r.createdat)).toISOString()
+      }));
       return { content: [{ type: 'text', text: JSON.stringify(recent, null, 2) }] };
     }
 

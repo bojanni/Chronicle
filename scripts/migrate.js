@@ -59,6 +59,24 @@ async function migrate() {
       )
     `);
 
+    // Enable pgvector and create vector index for semantic search
+    console.log('Enabling pgvector extension and creating vector index if needed...');
+    await client.query(`CREATE EXTENSION IF NOT EXISTS vector`);
+    // Expression index using cosine distance on embedding cast to vector
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE c.relname = 'idx_chats_embedding_ivfflat'
+        ) THEN
+          EXECUTE 'CREATE INDEX idx_chats_embedding_ivfflat ON chats USING ivfflat ((embedding::vector) vector_cosine_ops)';
+        END IF;
+      END $$;
+    `);
+
     await client.query('COMMIT');
     console.log('Migration completed successfully.');
   } catch (err) {

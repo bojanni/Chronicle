@@ -56,6 +56,22 @@ async function initDatabase() {
     await client.query('CREATE INDEX IF NOT EXISTS idx_chats_source ON chats(source)');
     await client.query('CREATE INDEX IF NOT EXISTS idx_chats_type ON chats(type)');
 
+    // Enable pgvector and ensure vector index exists for semantic search
+    await client.query('CREATE EXTENSION IF NOT EXISTS vector');
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE c.relname = 'idx_chats_embedding_ivfflat'
+        ) THEN
+          EXECUTE 'CREATE INDEX idx_chats_embedding_ivfflat ON chats USING ivfflat ((embedding::vector) vector_cosine_ops)';
+        END IF;
+      END $$;
+    `);
+
     await client.query('COMMIT');
     console.log('[Chronicle] PostgreSQL Schema verified.');
   } catch (err) {
@@ -73,8 +89,8 @@ ipcMain.handle('save-database', async (event, items) => {
     await client.query('BEGIN');
     for (const item of items) {
       await client.query(`
-        INSERT INTO chats (id, type, title, content, summary, tags, source, createdAt, updatedAt, fileName, embedding, assets)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        INSERT INTO chats (id, type, title, content, summary, tags, source, createdAt, updatedAt, fileName, embedding, assets, memory_type, salience)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         ON CONFLICT (id) DO UPDATE SET
           type = EXCLUDED.type,
           title = EXCLUDED.title,
@@ -84,7 +100,9 @@ ipcMain.handle('save-database', async (event, items) => {
           source = EXCLUDED.source,
           updatedAt = EXCLUDED.updatedAt,
           embedding = EXCLUDED.embedding,
-          assets = EXCLUDED.assets
+          assets = EXCLUDED.assets,
+          memory_type = EXCLUDED.memory_type,
+          salience = EXCLUDED.salience
       `, [
         item.id,
         item.type || 'chat',
@@ -97,7 +115,9 @@ ipcMain.handle('save-database', async (event, items) => {
         item.updatedAt || item.createdAt,
         item.fileName,
         item.embedding,
-        JSON.stringify(item.assets || [])
+        JSON.stringify(item.assets || []),
+        item.memory_type || null,
+        typeof item.salience === 'number' ? item.salience : null
       ]);
     }
     await client.query('COMMIT');
@@ -120,7 +140,9 @@ ipcMain.handle('load-database', async () => {
       updatedAt: Number(r.updatedat),
       tags: typeof r.tags === 'string' ? JSON.parse(r.tags) : r.tags,
       assets: typeof r.assets === 'string' ? JSON.parse(r.assets) : r.assets,
-      embedding: r.embedding
+      embedding: r.embedding,
+      memory_type: r.memory_type || null,
+      salience: r.salience !== undefined && r.salience !== null ? Number(r.salience) : null
     }));
   } catch (err) {
     console.error('[Chronicle] Load Error:', err);
