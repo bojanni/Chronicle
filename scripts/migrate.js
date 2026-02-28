@@ -25,7 +25,9 @@ async function migrate() {
         updatedAt BIGINT,
         fileName TEXT,
         embedding double precision[],
-        assets JSONB DEFAULT '[]'
+        assets JSONB DEFAULT '[]',
+        memory_type TEXT,
+        salience double precision
       )
     `);
 
@@ -35,6 +37,12 @@ async function migrate() {
       BEGIN
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='chats' AND column_name='assets') THEN
           ALTER TABLE chats ADD COLUMN assets JSONB DEFAULT '[]';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='chats' AND column_name='memory_type') THEN
+          ALTER TABLE chats ADD COLUMN memory_type TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='chats' AND column_name='salience') THEN
+          ALTER TABLE chats ADD COLUMN salience double precision;
         END IF;
       END $$;
     `);

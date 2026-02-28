@@ -54,6 +54,8 @@ export interface ChatEntry {
   fileName?: string;
   embedding?: number[]; 
   assets?: string[]; // Base64 encoded image strings or URIs
+  memory_type?: string;
+  salience?: number;
 }
 
 /**

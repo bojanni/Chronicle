@@ -33,7 +33,9 @@ async function initDatabase() {
         updatedAt BIGINT,
         fileName TEXT,
         embedding double precision[],
-        assets JSONB DEFAULT '[]'
+        assets JSONB DEFAULT '[]',
+        memory_type TEXT,
+        salience double precision
       )
     `);
 
